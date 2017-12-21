@@ -8,6 +8,7 @@ from parse import *
 
 HELP = """Plugin for importing IDR ROIs"""
 
+# Relevant columns in the HDF5 file
 COLUMN_IMAGENUMBER = "ImageNumber"
 COLUMN_WELLPOSITION = "Image_Metadata_CPD_WELL_POSITION"
 COLUMN_PLATEID = "Image_Metadata_PlateID"
@@ -21,19 +22,12 @@ CYTOPLASM_LOCATION_X = "Cytoplasm_Location_Center_X"
 CYTOPLASM_LOCATION_Y = "Cytoplasm_Location_Center_Y"
 
 class IDROIControl(BaseControl):
-    """
-    Some documentation
-    """
 
     def _configure(self, parser):
-        # Add an exception handler
         self.exc = ExceptionHandler()
 
-        # Add default login arguments, prompting the user for
-        # server login credentials
         parser.add_login_arguments()
 
-        # Add some 'commands', i.e. operations the plugin can perform
         parser.add_argument(
             "command", nargs="?",
             choices=("import", "remove"),
@@ -47,16 +41,13 @@ class IDROIControl(BaseControl):
             "screenId",
             help="The screen id")
 
-        # Add an additional argument
         parser.add_argument(
             "--dry-run", action="store_true", help="Does not write anything to OMERO")
 
         parser.set_defaults(func=self.process)
 
     def process(self, args):
-        # Check for necessary arguments
         if not args.command:
-            # Exit with code 100
             self.ctx.die(100, "No command provided")
 
         if args.command == "import":
@@ -68,7 +59,9 @@ class IDROIControl(BaseControl):
 
     def _mapImageIds(self, queryService, screenid):
         """
-        :param args:
+        Map all image names (in form 'PlateName | Well | Field')
+        to their ids
+        :param queryService: Reference to the query service
         :param screenid: The screen id
         :return: A dictionary mapping 'PlateName | Well | Field'
                 to the image ID
@@ -95,8 +88,10 @@ class IDROIControl(BaseControl):
 
     def _createROIs(self, args, imgIds):
         """
+        Parses the HDF5 file and creates point ROIs for nuclei, cells and cytplasm
         :param args:
-        :param imgIds: Dictionary mapping image positions to ids
+        :param imgIds: Dictionary mapping image names (in form 'PlateName | Well | Field')
+                       to ids
         :return: A dictionary containing a list of ROIs per image id
         """
         h5f = open_file(args.file, "r")
@@ -106,12 +101,12 @@ class IDROIControl(BaseControl):
             objs = h5f.get_node("/Objects")
             print("Objects: %d" % len(objs))
 
-            # Map image number to file name
+            # Map image number to image position (in form 'PlateName | Well | Field')
             imgdict = {}
             for row in imgs:
                 well = row[COLUMN_WELLPOSITION]
-                # Wells can be A03, have to strip the leading zero
-                # to match A3
+                # Wells can have leading zero, e.g. A03, have to strip the zero
+                # to match e.g. A3
                 wella = well[0]
                 wellb = "%d" % int(well[1:])
                 well = wella + wellb
@@ -168,6 +163,13 @@ class IDROIControl(BaseControl):
 
 
     def _saveROIs(self, rois, queryService, updateService):
+        """
+        Save the ROIs back to OMERO
+        :param rois: Dictionary of ROIs (list) per image id
+        :param queryService: Reference to the query service
+        :param updateService: Reference to the update service (can be None to simulate a 'dry-run')
+        :return:
+        """
         i = 0
         total = len(rois)
         for imageId in rois:
