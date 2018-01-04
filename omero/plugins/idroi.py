@@ -6,6 +6,7 @@ from omero.rtypes import rint, rstring, rlong
 
 from parse import *
 from time import time
+import signal
 
 HELP = """Plugin for importing IDR ROIs"""
 
@@ -24,7 +25,12 @@ CYTOPLASM_LOCATION_Y = "Cytoplasm_Location_Center_Y"
 
 class IDROIControl(BaseControl):
 
+    exitNow = False
+
     def _configure(self, parser):
+        signal.signal(signal.SIGINT, self._exitGracefully)
+        signal.signal(signal.SIGTERM, self._exitGracefully)
+
         self.exc = ExceptionHandler()
 
         parser.add_login_arguments()
@@ -56,6 +62,10 @@ class IDROIControl(BaseControl):
 
         if args.command == "remove":
             self.remove(args)
+
+    def _exitGracefully(self, signum, frame):
+        self.ctx.out("Caught exit signal, will stop when current transaction is finished.")
+        self.exitNow = True
 
     def _mapImagePositionToId(self, queryService, screenid):
         """
@@ -113,6 +123,18 @@ class IDROIControl(BaseControl):
 
         return imgdict
 
+    def _getROICount(self, queryService, imgId):
+        try:
+            params = omero.sys.Parameters()
+            params.map = {"imageId": rlong(imgId)}
+            query = "select count(*) from Roi as roi where roi.image.id = :imageId"
+            count = queryService.projection(query, params)
+            return count[0][0]._val
+
+        except:
+            self.ctx.err("Could not get ROI count for image %s" % str(imgId))
+            return 0
+
     def _saveROIs(self, rois, imgId, queryService, updateService):
         """
         Save the ROIs back to OMERO
@@ -123,42 +145,47 @@ class IDROIControl(BaseControl):
         :return:
         """
         try:
-            image = queryService.get("Image", imgId)
-            for roi in rois:
-                roi.setImage(image)
+            if self._getROICount(queryService, imgId) > 0:
+                self.ctx.out("Skipping image %s, already has ROIs attached." % imgId)
 
-            if updateService:
-                updateService.saveCollection(rois)
-                print("Saved %d ROIs for Image %s" % (len(rois), imgId))
             else:
-                print("Dry run - Would save %d ROIs for Image %s" % (len(rois), imgId))
+                image = queryService.get("Image", imgId)
+                for roi in rois:
+                    roi.setImage(image)
+
+                if updateService:
+                    updateService.saveCollection(rois)
+                    self.ctx.out("Saved %d ROIs for Image %s" % (len(rois), imgId))
+                else:
+                    self.ctx.out("Dry run - Would save %d ROIs for Image %s" % (len(rois), imgId))
 
         except:
-            print("WARNING: Could not save the ROIs for Image %s" % imgId)
+            self.ctx.err("WARNING: Could not save the ROIs for Image %s" % imgId)
 
     def importFile(self, args):
-        print("Import ROIs from file %s for screen %s" % (args.file, args.screenId))
+        self.ctx.out("Import ROIs from file %s for screen %s" % (args.file, args.screenId))
 
         conn = self.ctx.conn(args)
         updateService = conn.sf.getUpdateService()
         queryService = conn.sf.getQueryService()
 
         imgIds = self._mapImagePositionToId(queryService, args.screenId)
-        print("Mapped %d OMERO image ids to plate positions" % len(imgIds))
+        self.ctx.out("Mapped %d OMERO image ids to plate positions" % len(imgIds))
 
         imgNumbers = self._mapImageNumberToPosition(args)
         total = len(imgNumbers)
-        print("Found %d images in HDF5 file" % total)
+        self.ctx.out("Found %d images in HDF5 file" % total)
 
         h5f = open_file(args.file, "a")
         try:
             objs = h5f.get_node("/Objects")
-            print("Found %d objects in HDF5 file" % len(objs))
+            self.ctx.out("Found %d objects in HDF5 file" % len(objs))
             done = 0
 
-            if not objs.cols.ImageNumber.is_indexed:
-                print("Create index for ImageNumber column...")
-                objs.cols.ImageNumber.create_index()
+            imgnoColumn = objs.colinstances[COLUMN_IMAGENUMBER]
+            if not imgnoColumn.is_indexed:
+                self.ctx.out("Create index for the image number column...")
+                imgnoColumn.create_index()
 
             start = time()
             for imgNumber in imgNumbers:
@@ -204,9 +231,13 @@ class IDROIControl(BaseControl):
                         self._saveROIs(rois, imgId, queryService, updateService)
 
                 else:
-                    print("WARNING: Could not map image %s to an OMERO image id." % pos)
+                    self.ctx.err("WARNING: Could not map image %s to an OMERO image id." % pos)
 
-                print("%d of %d images (%d %%) processed." % (done, total, done * 100 / total))
+                self.ctx.out("%d of %d images (%d %%) processed." % (done, total, done * 100 / total))
+
+                if self.exitNow:
+                    h5f.close()
+                    exit(0)
 
                 if done % 100 == 0:
                     duration = (time() - start) / 100
@@ -214,14 +245,13 @@ class IDROIControl(BaseControl):
                     m, s = divmod(left, 60)
                     h, m = divmod(m, 60)
                     start = time()
-                    print("ETR: %d:%02d:%02d" % (h, m, s))
+                    self.ctx.out("ETR: %d:%02d:%02d hrs" % (h, m, s))
 
         finally:
             h5f.close()
 
-
     def remove(self, args):
-        print("Not implemented yet")
+        raise Exception("Not implemented yet")
 
 try:
     register("idroi", IDROIControl, HELP)
