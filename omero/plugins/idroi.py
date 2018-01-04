@@ -5,6 +5,7 @@ import omero
 from omero.rtypes import rint, rstring, rlong
 
 from parse import *
+from time import time
 
 HELP = """Plugin for importing IDR ROIs"""
 
@@ -56,11 +57,10 @@ class IDROIControl(BaseControl):
         if args.command == "remove":
             self.remove(args)
 
-
-    def _mapImageIds(self, queryService, screenid):
+    def _mapImagePositionToId(self, queryService, screenid):
         """
         Map all image names (in form 'PlateName | Well | Field')
-        to their ids
+        to their OMERO image ids
         :param queryService: Reference to the query service
         :param screenid: The screen id
         :return: A dictionary mapping 'PlateName | Well | Field'
@@ -85,24 +85,19 @@ class IDROIControl(BaseControl):
 
         return imgdic
 
-
-    def _createROIs(self, args, imgIds):
+    def _mapImageNumberToPosition(self, args):
         """
-        Parses the HDF5 file and creates point ROIs for nuclei, cells and cytplasm
-        :param args:
-        :param imgIds: Dictionary mapping image names (in form 'PlateName | Well | Field')
-                       to ids
-        :return: A dictionary containing a list of ROIs per image id
+        Maps the ImageNumber in the HDF5 file to plate positions
+        :param args: The arguments array
+        :return: A dictionary mapping the ImageNumber in the HDF5 file to
+                 plate positions (in form 'PlateName | Well | Field')
         """
+        imgdict = {}
         h5f = open_file(args.file, "r")
         try:
             imgs = h5f.get_node("/Images")
-            print("Images: %d" % len(imgs))
-            objs = h5f.get_node("/Objects")
-            print("Objects: %d" % len(objs))
 
             # Map image number to image position (in form 'PlateName | Well | Field')
-            imgdict = {}
             for row in imgs:
                 well = row[COLUMN_WELLPOSITION]
                 # Wells can have leading zero, e.g. A03, have to strip the zero
@@ -113,79 +108,33 @@ class IDROIControl(BaseControl):
                 imgpos = "%s | %s | %s" % (row[COLUMN_PLATEID], well, row[COLUMN_FIELD])
                 imgdict[row[COLUMN_IMAGENUMBER]] = imgpos
 
-            roisdict = {}
-            skipped = 0
-            for row in objs:
-                nucleus = omero.model.RoiI()
-                point = omero.model.PointI()
-                point.x = row[NUCLEI_LOCATION_X]
-                point.y = row[NUCLEI_LOCATION_Y]
-                point.theZ = rint(0)
-                point.theT = rint(0)
-                point.textValue = rstring("Nucleus")
-                nucleus.addShape(point)
-
-                cell = omero.model.RoiI()
-                point = omero.model.PointI()
-                point.x = row[CELLS_LOCATION_X]
-                point.y = row[CELLS_LOCATION_Y]
-                point.theZ = rint(0)
-                point.theT = rint(0)
-                point.textValue = rstring("Cell")
-                cell.addShape(point)
-
-                cyto = omero.model.RoiI()
-                point = omero.model.PointI()
-                point.x = row[CYTOPLASM_LOCATION_X]
-                point.y = row[CYTOPLASM_LOCATION_Y]
-                point.theZ = rint(0)
-                point.theT = rint(0)
-                point.textValue = rstring("Cytoplasm")
-                cyto.addShape(point)
-
-                imgpos = imgdict[row[COLUMN_IMAGENUMBER]]
-                if imgpos in imgIds:
-                    if imgIds[imgpos] not in roisdict:
-                        roisdict[imgIds[imgpos]] = []
-                    roisdict[imgIds[imgpos]].append(nucleus)
-                    roisdict[imgIds[imgpos]].append(cell)
-                    roisdict[imgIds[imgpos]].append(cyto)
-                else:
-                    skipped += 3
-
-            if skipped > 0:
-                print("Skipped %d ROIs because they can't be associated with an image" % skipped)
-
         finally:
             h5f.close()
 
-        return roisdict
+        return imgdict
 
-
-    def _saveROIs(self, rois, queryService, updateService):
+    def _saveROIs(self, rois, imgId, queryService, updateService):
         """
         Save the ROIs back to OMERO
-        :param rois: Dictionary of ROIs (list) per image id
+        :param rois: A list of ROIs
+        :param imgId: The image ID to attach the ROIs to
         :param queryService: Reference to the query service
         :param updateService: Reference to the update service (can be None to simulate a 'dry-run')
         :return:
         """
-        i = 0
-        total = len(rois)
-        for imageId in rois:
-            i += 1
-            image = queryService.get("Image", imageId)
-            batch = []
-            for roi in rois[imageId]:
+        try:
+            image = queryService.get("Image", imgId)
+            for roi in rois:
                 roi.setImage(image)
-                batch.append(roi)
 
             if updateService:
-                updateService.saveCollection(batch)
-                print("Saved %d ROIs for Image %s (%d / %d images done)" % (len(batch), imageId, i, total))
+                updateService.saveCollection(rois)
+                print("Saved %d ROIs for Image %s" % (len(rois), imgId))
             else:
-                print("Dryrun - Would save %d ROIs for Image %s (%d / %d images done)" % (len(batch), imageId, i, total))
+                print("Dry run - Would save %d ROIs for Image %s" % (len(rois), imgId))
 
+        except:
+            print("WARNING: Could not save the ROIs for Image %s" % imgId)
 
     def importFile(self, args):
         print("Import ROIs from file %s for screen %s" % (args.file, args.screenId))
@@ -194,16 +143,81 @@ class IDROIControl(BaseControl):
         updateService = conn.sf.getUpdateService()
         queryService = conn.sf.getQueryService()
 
-        imgdic = self._mapImageIds(queryService, args.screenId)
-        print("Mapped %d image ids to plate positions" % len(imgdic))
+        imgIds = self._mapImagePositionToId(queryService, args.screenId)
+        print("Mapped %d OMERO image ids to plate positions" % len(imgIds))
 
-        rois = self._createROIs(args, imgdic)
-        print("Created ROIs for %d images" % len(rois))
+        imgNumbers = self._mapImageNumberToPosition(args)
+        total = len(imgNumbers)
+        print("Found %d images in HDF5 file" % total)
 
-        if args.dry_run:
-            self._saveROIs(rois, queryService, None)
-        else:
-            self._saveROIs(rois, queryService, updateService)
+        h5f = open_file(args.file, "a")
+        try:
+            objs = h5f.get_node("/Objects")
+            print("Found %d objects in HDF5 file" % len(objs))
+            done = 0
+
+            if not objs.cols.ImageNumber.is_indexed:
+                print("Create index for ImageNumber column...")
+                objs.cols.ImageNumber.create_index()
+
+            start = time()
+            for imgNumber in imgNumbers:
+                pos = imgNumbers[imgNumber]
+                done += 1
+                if pos in imgIds:
+                    imgId = imgIds[pos]
+                    rois = []
+                    for row in objs.where(COLUMN_IMAGENUMBER+" == "+str(imgNumber)):
+                        roi = omero.model.RoiI()
+                        point = omero.model.PointI()
+                        point.x = row[NUCLEI_LOCATION_X]
+                        point.y = row[NUCLEI_LOCATION_Y]
+                        point.theZ = rint(0)
+                        point.theT = rint(0)
+                        point.textValue = rstring("Nucleus")
+                        roi.addShape(point)
+                        rois.append(roi)
+
+                        roi = omero.model.RoiI()
+                        point = omero.model.PointI()
+                        point.x = row[CELLS_LOCATION_X]
+                        point.y = row[CELLS_LOCATION_Y]
+                        point.theZ = rint(0)
+                        point.theT = rint(0)
+                        point.textValue = rstring("Cell")
+                        roi.addShape(point)
+                        rois.append(roi)
+
+                        roi = omero.model.RoiI()
+                        point = omero.model.PointI()
+                        point.x = row[CYTOPLASM_LOCATION_X]
+                        point.y = row[CYTOPLASM_LOCATION_Y]
+                        point.theZ = rint(0)
+                        point.theT = rint(0)
+                        point.textValue = rstring("Cytoplasm")
+                        roi.addShape(point)
+                        rois.append(roi)
+
+                    if args.dry_run:
+                        self._saveROIs(rois, imgId, queryService, None)
+                    else:
+                        self._saveROIs(rois, imgId, queryService, updateService)
+
+                else:
+                    print("WARNING: Could not map image %s to an OMERO image id." % pos)
+
+                print("%d of %d images (%d %%) processed." % (done, total, done * 100 / total))
+
+                if done % 100 == 0:
+                    duration = (time() - start) / 100
+                    left = duration * (total - done)
+                    m, s = divmod(left, 60)
+                    h, m = divmod(m, 60)
+                    start = time()
+                    print("ETR: %d:%02d:%02d" % (h, m, s))
+
+        finally:
+            h5f.close()
 
 
     def remove(self, args):
