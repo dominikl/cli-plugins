@@ -6,6 +6,8 @@ from omero.rtypes import rint, rstring, rlong
 
 from parse import *
 from time import time
+from math import isnan
+
 import signal
 
 HELP = """Plugin for importing IDR ROIs"""
@@ -195,35 +197,44 @@ class IDROIControl(BaseControl):
                     imgId = imgIds[pos]
                     rois = []
                     for row in objs.where(COLUMN_IMAGENUMBER+" == "+str(imgNumber)):
-                        roi = omero.model.RoiI()
-                        point = omero.model.PointI()
-                        point.x = row[NUCLEI_LOCATION_X]
-                        point.y = row[NUCLEI_LOCATION_Y]
-                        point.theZ = rint(0)
-                        point.theT = rint(0)
-                        point.textValue = rstring("Nucleus")
-                        roi.addShape(point)
-                        rois.append(roi)
+                        x = row[NUCLEI_LOCATION_X]
+                        y = row[NUCLEI_LOCATION_Y]
+                        if not (isnan(x) or isnan(y)):
+                            roi = omero.model.RoiI()
+                            point = omero.model.PointI()
+                            point.x = x
+                            point.y = y
+                            point.theZ = rint(0)
+                            point.theT = rint(0)
+                            point.textValue = rstring("Nucleus")
+                            roi.addShape(point)
+                            rois.append(roi)
 
-                        roi = omero.model.RoiI()
-                        point = omero.model.PointI()
-                        point.x = row[CELLS_LOCATION_X]
-                        point.y = row[CELLS_LOCATION_Y]
-                        point.theZ = rint(0)
-                        point.theT = rint(0)
-                        point.textValue = rstring("Cell")
-                        roi.addShape(point)
-                        rois.append(roi)
+                        x = row[CELLS_LOCATION_X]
+                        y = row[CELLS_LOCATION_Y]
+                        if not (isnan(x) or isnan(y)):
+                            roi = omero.model.RoiI()
+                            point = omero.model.PointI()
+                            point.x = x
+                            point.y = y
+                            point.theZ = rint(0)
+                            point.theT = rint(0)
+                            point.textValue = rstring("Cell")
+                            roi.addShape(point)
+                            rois.append(roi)
 
-                        roi = omero.model.RoiI()
-                        point = omero.model.PointI()
-                        point.x = row[CYTOPLASM_LOCATION_X]
-                        point.y = row[CYTOPLASM_LOCATION_Y]
-                        point.theZ = rint(0)
-                        point.theT = rint(0)
-                        point.textValue = rstring("Cytoplasm")
-                        roi.addShape(point)
-                        rois.append(roi)
+                        x = row[CYTOPLASM_LOCATION_X]
+                        y = row[CYTOPLASM_LOCATION_Y]
+                        if not (isnan(x) or isnan(y)):
+                            roi = omero.model.RoiI()
+                            point = omero.model.PointI()
+                            point.x = x
+                            point.y = y
+                            point.theZ = rint(0)
+                            point.theT = rint(0)
+                            point.textValue = rstring("Cytoplasm")
+                            roi.addShape(point)
+                            rois.append(roi)
 
                     if args.dry_run:
                         self._saveROIs(rois, imgId, queryService, None)
